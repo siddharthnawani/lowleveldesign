@@ -1,0 +1,378 @@
+Question : Design Goodreads.
+
+User should be able to add books and friends.
+User should be able to get a list of their books.
+Users should be able to get list of their top books that their friends have read.
+Users should be able to get list of top books that their network has read.
+
+Approach
+Models: We first create the necessary models for our app: user and book. These are simple Java POJO classes with Lombok annotations to handle basic getters, setters, and string representation.
+
+Book: Represents a book with attributes like title and a unique identifier (e.g., UUID).
+User: Represents a user with attributes like name, a unique user ID, a list of friend IDs, and a list of book IDs.
+package com.goodreads.model;
+
+import lombok.Getter;
+import lombok.Setter;
+import lombok.ToString;
+
+import java.util.UUID;
+
+@Getter
+@Setter
+@ToString
+public class Book {
+    private String bookName;
+    private String bookId;
+
+    public Book(String bookName) {
+        this.bookName = bookName;
+        this.bookId = UUID.randomUUID().toString();
+    }
+
+}
+package com.goodreads.model;
+
+import lombok.Getter;
+import lombok.Setter;
+
+import java.util.HashSet;
+import java.util.Set;
+import java.util.UUID;
+
+@Getter
+@Setter
+public class User {
+    private String userId;
+    private String name;
+    private Set<String> friends;
+    private Set<String> books;
+
+    public User(String name) {
+        this.name = name;
+        this.userId = UUID.randomUUID().toString();
+        this.friends = new HashSet<>();
+        this.books = new HashSet<>();
+    }
+}
+Now, we need to create respective services for user and book management. These services will provide methods for:
+
+User Service:
+
+createUser(String username): Creates a new user with the provided username.
+getUser(String userId): Retrieves a user by their ID. (Optional methods can be added for removing users, etc.)
+addFriend(String userId, String friendId): Adds a friend connection between two users.
+addBookToList(String userId, String bookId): Adds a book to a user's reading list.
+Book Service:
+
+addBook(String bookName): Creates a new book with the provided name.
+getBook(String bookId): Retrieves a book by its ID. (Optional methods can be added for searching or filtering books.)
+package com.goodreads.service;
+
+import com.goodreads.model.User;
+
+import java.util.HashMap;
+import java.util.Map;
+
+//singleton class
+public class UserService {
+
+    private static UserService userServiceInstance;
+    private final Map<String, User> users;
+
+    public static UserService getUserServiceSingleton() {
+        if(userServiceInstance == null)
+          userServiceInstance = new UserService();
+        return userServiceInstance;
+    }
+
+    private UserService() {
+        this.users = new HashMap<>();
+    }
+
+    public Map<String, User> getUsers() {
+        return users;
+    }
+
+    public User createUser(String username) {
+        User user = new User(username);
+        users.put(user.getUserId(), user);
+        return user;
+    }
+
+    public User removeUser(String userId) {
+        if (users.containsKey(userId))
+            return users.remove(userId);
+        return null;
+    }
+
+    public void addFriend(String userId, String friendId) {
+        users.get(userId).getFriends().add(friendId);
+    }
+
+    public void addBookToList(String userId, String bookId) {
+        users.get(userId).getBooks().add(bookId);
+    }
+}
+package com.goodreads.service;
+
+import com.goodreads.model.Book;
+import java.util.HashMap;
+import java.util.Map;
+
+//singleton class
+public class BookService {
+
+    private static BookService bookServiceInstance;
+    private final Map<String, Book> books;
+
+    public static BookService getBookServiceSingleton() {
+        if (bookServiceInstance == null)
+            bookServiceInstance = new BookService();
+        return bookServiceInstance;
+    }
+
+    private BookService() {
+        this.books = new HashMap<>();
+    }
+
+    public Map<String, Book> getBooks() {
+        return this.books;
+    }
+
+    public Book addBook(String bookName) {
+        Book book = new Book(bookName);
+        this.books.put(book.getBookId(), book);
+        return book;
+    }
+
+}
+Pretty straightforward methods, the only magical stuff is the private constructor method and a static getServiceNameSingleton method to ensure we always get the same instance.
+
+Okay, now comes the part where we need to brainstorm a strategy to get books for a user or get the top books a user has read.
+
+You got it right. We’re going to use the Strategy Pattern to define our algorithms for finding top books. Why do we need strategy? Well, today we have a simpler use case to fetch top books by read count. But tomorrow, we might get a requirement to fetch them by popularity or maybe pages. Using the Strategy Pattern, we can have multiple implementations of a strategy interface and use them as per requirements.
+
+package com.goodreads.strategy;
+
+import com.goodreads.model.Book;
+import com.goodreads.model.User;
+
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+public interface BookLookupStrategy {
+    List<Book> getTopUserBooksThatFriendsHaveRead(Map<String, Book> books, Map<String, User> users, String userId, int capacity);
+    List<Book> getTopBooksThatNetworksHaveRead(Map<String, Book> books, Map<String, User> users, String userId, int capacity, int maxDepth);
+    default List<Book> getBooks(Map<String, Book> books, Map<String, User> users, String userId) {
+        return users.get(userId).getBooks()
+                .stream()
+                .map(books::get)
+                .collect(Collectors.toList());
+    }
+}
+package com.goodreads.strategy;
+
+import com.goodreads.model.Book;
+import com.goodreads.model.User;
+import com.goodreads.util.Pair;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+public class BookLookupStrategyImpl implements BookLookupStrategy {
+
+    @Override
+    public List<Book> getTopUserBooksThatFriendsHaveRead(Map<String, Book> books, Map<String, User> users, String userId, int capacity) {
+        User user = users.get(userId);
+
+        Map<String, Integer> popularityCounter = user.getBooks()
+                .stream()
+                .flatMap(
+                        book -> user.getFriends()
+                                .stream()
+                                .filter(friend -> users.get(friend).getBooks().contains(book))
+                                .map(friend -> book)
+                ).collect(Collectors.toMap(
+                        book -> book,
+                        book -> 1,
+                        Integer::sum
+                ));
+
+        return popularityCounter.entrySet()
+                .stream()
+                .sorted(Map.Entry.comparingByValue())
+                .limit(capacity)
+                .map(entry -> books.get(entry.getKey()))
+                .collect(Collectors.toList());
+
+    }
+
+    @Override
+    public List<Book> getTopBooksThatNetworksHaveRead(Map<String, Book> books, Map<String, User> users, String userId, int capacity, int maxDepth) {
+        Set<String> visited = new HashSet<>();
+        Queue<Pair<String, Integer>> queue = new LinkedList<>();
+        Map<String, Integer> bookFrequency = new HashMap<>();
+        queue.add(new Pair<>(userId, 0));
+        visited.add(userId);
+        while (!queue.isEmpty()) {
+            Pair<String, Integer> currentPair = queue.poll();
+            String currentUserId = currentPair.getFirst();
+            if(currentPair.getSecond() == maxDepth)
+                break;
+            User currentUser = users.get(currentUserId);
+
+            currentUser.getBooks().forEach(book -> {
+                bookFrequency.put(book, bookFrequency.getOrDefault(book, 0)+1);
+            });
+
+            currentUser.getFriends().forEach(friend -> {
+                if(!visited.contains(friend)) {
+                    visited.add(friend);
+                    queue.add(new Pair<>(friend, currentPair.getSecond()+1));
+                }
+            });
+        }
+        return bookFrequency.entrySet()
+                .stream()
+                .sorted(Map.Entry.comparingByValue())
+                .limit(capacity)
+                .map(book -> books.get(book.getKey()))
+                .collect(Collectors.toList());
+    }
+}
+package com.goodreads.util;
+
+import lombok.Getter;
+import lombok.Setter;
+
+@Getter
+@Setter
+public class Pair<K,V>{
+    K first;
+    V second;
+    public Pair(K first, V second) {
+        this.first = first;
+        this.second = second;
+    }
+}
+We have a BookLookupStrategy interface that defines methods for finding top books. This interface may have one default implementation and a couple of abstract classes for specific lookup criteria (e.g., by read count, popularity).
+
+Moving on to the concrete implementation class, it provides methods like getTopUserBooksThatFriendsHaveRead and getTopBooksThatNetworksHaveRead.
+
+getTopUserBooksThatFriendsHaveRead: This method iterates through all a user’s books. It checks if the user’s friends have the same book in their lists. If a friend has the book, the book’s count is incremented in a map that uses the book ID as the key and the frequency as the value. Finally, the map is sorted based on the frequency values, and the resulting list is returned.
+getTopBooksThatNetworksHaveRead: This method employs Breadth-First Search (BFS) to traverse the user’s social network level by level. An argument is passed to restrict the search depth, preventing an infinite loop.
+Now,we’ll combine all the services and the lookup strategy class. We don’t want the client to manage object creation or complex workflows. To achieve this client-side simplicity, we’ll utilize the Facade Pattern.
+
+GoodReadsFacade Class:
+
+The GoodReadsFacade class acts as a facade, providing a unidirectional flow from the client to the underlying services. The client interacts solely with this facade class to get its tasks done without needing to understand the internal implementation details.
+
+package com.goodreads.facade;
+
+import com.goodreads.model.Book;
+import com.goodreads.model.User;
+import com.goodreads.service.BookService;
+import com.goodreads.service.UserService;
+import com.goodreads.strategy.BookLookupStrategy;
+import com.goodreads.strategy.BookLookupStrategyImpl;
+
+import java.util.List;
+
+public class GoodReadsFacade {
+
+    private UserService userService;
+    private BookService bookService;
+    private BookLookupStrategy bookLookupStrategy;
+
+    public void initialize() {
+        this.userService = UserService.getUserServiceSingleton();
+        this.bookService = BookService.getBookServiceSingleton();
+        this.bookLookupStrategy = new BookLookupStrategyImpl();
+    }
+
+    public User createNewUser(String userName) {
+        return this.userService.createUser(userName);
+    }
+
+    public void addFriend(String user1, String user2) {
+        this.userService.addFriend(user1, user2);
+        this.userService.addFriend(user2, user1);
+    }
+
+    public void addBookToList(String userId, String bookId) {
+        this.userService.addBookToList(userId, bookId);
+    }
+
+    public List<Book> getUserBooks(String userId) {
+        return this.bookLookupStrategy.getBooks(bookService.getBooks(), userService.getUsers(), userId);
+    }
+
+    public Book addNewBook(String bookName) {
+        return this.bookService.addBook(bookName);
+    }
+
+    public List<Book> getTopUserBooksThatFriendsHaveRead(String userId, int capacity) {
+        return this.bookLookupStrategy.getTopUserBooksThatFriendsHaveRead(bookService.getBooks(), userService.getUsers(), userId, capacity);
+    }
+
+    public List<Book> getTopBooksThatNetworksHaveRead(String userId, int capacity, int depth) {
+        return this.bookLookupStrategy.getTopBooksThatNetworksHaveRead(bookService.getBooks(), userService.getUsers(), userId, capacity, depth);
+    }
+}
+Finally, the App class demonstrates how a client interacts with GoodReads through the Facade:
+
+package com.goodreads;
+
+
+import com.goodreads.facade.GoodReadsFacade;
+import com.goodreads.model.Book;
+import com.goodreads.model.User;
+
+public class App {
+    public static void main(String[] args) {
+        GoodReadsFacade alexa = new GoodReadsFacade();
+        alexa.initialize();
+        User ben = alexa.createNewUser("Ben");
+        User ram = alexa.createNewUser("Ram");
+        User mohan = alexa.createNewUser("Mohan");
+        User kevin = alexa.createNewUser("Kevin");
+        Book book1 = alexa.addNewBook("Book1");
+        Book book2 = alexa.addNewBook("Book2");
+        Book book3 = alexa.addNewBook("Book3");
+        Book book4 = alexa.addNewBook("Book4");
+        Book book5 = alexa.addNewBook("Book5");
+        Book book6 = alexa.addNewBook("Book6");
+
+        alexa.addBookToList(ben.getUserId(), book1.getBookId());
+        alexa.addBookToList(ben.getUserId(), book2.getBookId());
+        alexa.addBookToList(ben.getUserId(), book3.getBookId());
+
+        alexa.addBookToList(ram.getUserId(), book3.getBookId());
+        alexa.addBookToList(ram.getUserId(), book4.getBookId());
+        alexa.addBookToList(ram.getUserId(), book5.getBookId());
+
+        alexa.addBookToList(mohan.getUserId(), book1.getBookId());
+        alexa.addBookToList(mohan.getUserId(), book2.getBookId());
+        alexa.addBookToList(mohan.getUserId(), book6.getBookId());
+
+        alexa.addBookToList(kevin.getUserId(), book5.getBookId());
+        alexa.addBookToList(kevin.getUserId(), book1.getBookId());
+        alexa.addBookToList(kevin.getUserId(), book4.getBookId());
+
+        alexa.addFriend(kevin.getUserId(), ram.getUserId());
+        alexa.addFriend(ben.getUserId(), mohan.getUserId());
+        alexa.addFriend(ram.getUserId(), ben.getUserId());
+
+        System.out.println("Kevin's all books :");
+        alexa.getUserBooks(kevin.getUserId()).forEach(System.out::println); //fetch all user books
+        System.out.println("Popular books that are in Kevin's list :");
+        alexa.getTopUserBooksThatFriendsHaveRead(kevin.getUserId(), 2).forEach(System.out::println); //fetch popular books that are in Kevin's list
+        System.out.println("Popular books in the network :");
+        alexa.getTopBooksThatNetworksHaveRead(kevin.getUserId(), 3, 3).forEach(System.out::println); //fetch popular books from a graph of network up to a certain depth
+    }
+}
+Wonderful! Our low level design is complete. It might have seen difficult at first but how we have managed to break down tasks and complete one at a time. We have also gone through Singleton, Strategy and Facade patterns to achieve modularity, decrease coupling and increase client-friendliness.
+
+Some improvements we can add are adding exceptions, loggers etc. Thanks for reading till the end. Feel free to comment to provide feedbacks and suggestions.
